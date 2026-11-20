@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Grab &amp; Send</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#141413;color:#f1efe8;font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px;max-width:560px;margin-inline:auto}
+h1{font-size:1.4rem;margin:0 0 4px}
+p{color:#a09e97;margin:0 0 12px}
+.card{background:#201f1d;border-radius:16px;padding:14px;margin-bottom:14px}
+.tabs,.row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+button,label.btn{font:inherit;border:0;border-radius:12px;padding:12px 14px;background:#ff7a45;color:#fff;cursor:pointer;display:inline-block}
+.ghost{background:transparent!important;color:#f1efe8!important;border:1px solid #6b6a66!important}
+input[type=text]{font:inherit;padding:12px;border-radius:12px;border:1px solid #6b6a66;background:#141413;color:#f1efe8;width:130px;text-transform:uppercase;letter-spacing:.2em;text-align:center}
+.stage{position:relative;aspect-ratio:4/3;background:#000;border-radius:12px;overflow:hidden}
+canvas{position:absolute;inset:0;width:100%;height:100%}
+video{display:none}
+#status{font-weight:600;margin:10px 0}
+#code{font-size:2.4rem;letter-spacing:.3em;font-weight:700;text-align:center;margin:10px 0}
+#recv{position:relative;aspect-ratio:1;background:#201f1d;border-radius:16px;overflow:hidden;display:flex;align-items:center;justify-content:center;color:#a09e97;text-align:center;padding:20px}
+#rimg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;clip-path:inset(0 0 100% 0);display:none}
+#rimg.draw{display:block;animation:draw 2.4s ease-out forwards}
+@keyframes draw{to{clip-path:inset(0 0 0 0)}}
+.hidden{display:none!important}
+#blocked{display:none;text-align:center;padding:40px 10px}
+</style>
+</head>
+<body>
+<div id="blocked"><h1>Chrome only</h1><p>This website works only in Google Chrome. Please open it in Chrome.</p></div>
+
+<div id="app">
+<h1>Grab &amp; Send</h1>
+<p>Open this site in Chrome on two phones. Pair them with a code.</p>
+<div class="tabs"><button id="tS">Send</button><button id="tR" class="ghost">Receive</button></div>
+
+<section id="send">
+ <div class="card">
+  <div class="row">
+   <input id="codeIn" type="text" maxlength="4" placeholder="CODE">
+   <button id="conn">Connect</button>
+   <label class="btn ghost">Choose image<input id="f" type="file" accept="image/*" hidden></label>
+  </div>
+  <div class="stage"><video id="v" playsinline muted></video><canvas id="c"></canvas></div>
+  <div id="status">1) Get the code from the other phone. 2) Connect. 3) Choose an image.</div>
+  <button id="cam">Start camera</button>
+  <p style="margin-top:10px">Show an open hand, <b>close it into a fist</b> to grab the image, then <b>open your hand</b> to send it.</p>
+ </div>
+</section>
+
+<section id="receive" class="hidden">
+ <div class="card"><p>Enter this code on the sending phone:</p><div id="code">----</div><div id="rstat" style="text-align:center;color:#a09e97">Starting…</div></div>
+ <div id="recv"><span id="rtxt">Waiting for an image…</span><img id="rimg" alt="Received image"></div>
+</section>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.js" crossorigin="anonymous"></script>
+<script>
+(function(){
+  var $=function(i){return document.getElementById(i)};
+
+  // ---- Chrome only ----
+  var ua=navigator.userAgent, brands=(navigator.userAgentData&&navigator.userAgentData.brands||[]).map(function(b){return b.brand});
+  var isChrome=brands.length?(brands.indexOf("Google Chrome")>-1&&!brands.some(function(b){return /Edge|Opera/.test(b)})):(/Chrome\//.test(ua)&&!/Edg|OPR|SamsungBrowser|Firefox|FxiOS/.test(ua));
+  if(!isChrome){$("app").style.display="none";$("blocked").style.display="block";return;}
+
+  // ---- tabs ----
+  var recvStarted=false;
+  function tab(s){$("send").classList.toggle("hidden",!s);$("receive").classList.toggle("hidden",s);$("tS").className=s?"":"ghost";$("tR").className=s?"ghost":"";if(!s&&!recvStarted)startReceiver();}
+  $("tS").onclick=function(){tab(true)};$("tR").onclick=function(){tab(false)};
+  function say(t){$("status").textContent=t}
+  var PRE="grabsend-";
+
+  // ---- receiver ----
+  function startReceiver(){
+    recvStarted=true;
+    var chars="ABCDEFGHJKLMNPQRSTUVWXYZ23456789",code="";for(var i=0;i<4;i++)code+=chars[Math.floor(Math.random()*chars.length)];
+    var peer=new Peer(PRE+code);
+    peer.on("open",function(){$("code").textContent=code;$("rstat").textContent="Waiting for the other phone…"});
+    peer.on("error",function(e){if(e.type==="unavailable-id"){recvStarted=false;startReceiver()}else $("rstat").textContent="Connection error: "+e.type});
+    peer.on("connection",function(c){
+      $("rstat").textContent="Connected ✓";
+      c.on("data",function(url){
+        if(typeof url!=="string"||url.indexOf("data:image/")!==0)return;
+        var el=$("rimg");el.classList.remove("draw");void el.offsetWidth;
+        el.onload=function(){$("rtxt").style.display="none";el.classList.add("draw")};
+        el.src=url;
+      });
+    });
+  }
+
+  // ---- sender: connection ----
+  var conn=null, img=null, imgEl=null, state="idle";
+  $("conn").onclick=function(){
+    var code=$("codeIn").value.trim().toUpperCase(); if(code.length!==4){say("Enter the 4-letter code.");return;}
+    var p=new Peer(); say("Connecting…");
+    p.on("open",function(){conn=p.connect(PRE+code,{reliable:true});
+      conn.on("open",function(){say("Connected ✓ Choose an image and start the camera.")});
+      conn.on("close",function(){conn=null;say("Disconnected.")});});
+    p.on("error",function(e){say("Could not connect ("+e.type+"). Check the code.")});
+  };
+
+  // ---- image ----
+  $("f").onchange=function(e){
+    var file=e.target.files[0]; if(!file)return;
+    var im=new Image(); im.onload=function(){
+      var s=Math.min(1,800/Math.max(im.width,im.height)), cv=document.createElement("canvas");
+      cv.width=im.width*s;cv.height=im.height*s;cv.getContext("2d").drawImage(im,0,0,cv.width,cv.height);
+      img=cv.toDataURL("image/jpeg",.75);imgEl=new Image();imgEl.src=img;say("Image ready. Start the camera.");
+    };im.src=URL.createObjectURL(file);
+  };
+
+  // ---- grab / release ----
+  function grab(){ if(!img||state!=="idle")return; state="holding"; say("✊ Got it! Open your hand to send."); }
+  function release(){
+    if(state!=="holding")return; state="idle";
+    if(conn&&conn.open){conn.send(img);say("✅ Sent!");}else say("Not connected to the other phone.");
+  }
+
+  // ---- real hand tracking (MediaPipe Hands) ----
+  var v=$("v"),c=$("c"),ctx=c.getContext("2d"),fistN=0,openN=0,hands=null;
+  function d(a,b,ar){var dx=(a.x-b.x)*ar,dy=a.y-b.y;return Math.sqrt(dx*dx+dy*dy)}
+  function onResults(r){
+    c.width=v.videoWidth;c.height=v.videoHeight;
+    ctx.save();ctx.scale(-1,1);ctx.drawImage(v,-c.width,0,c.width,c.height);ctx.restore();
+    var L=r.multiHandLandmarks&&r.multiHandLandmarks[0];
+    if(!L){fistN=openN=0;return;}
+    var ar=c.width/c.height,palm=d(L[0],L[9],ar),sum=0;
+    [8,12,16,20].forEach(function(t){sum+=d(L[0],L[t],ar)});
+    var ratio=(sum/4)/palm; // ~2 open, ~1 fist
+    if(ratio<1.3){fistN++;openN=0}else if(ratio>1.65){openN++;fistN=0}else{fistN=openN=0}
+    if(state==="idle"&&fistN>=3)grab();
+    if(state==="holding"&&openN>=3)release();
+    var x=(1-L[9].x)*c.width,y=L[9].y*c.height;
+    if(state==="holding"&&imgEl){var w=c.width*.35,h=w*imgEl.height/imgEl.width;
+      ctx.strokeStyle="#fff";ctx.lineWidth=4;ctx.drawImage(imgEl,x-w/2,y-h/2,w,h);ctx.strokeRect(x-w/2,y-h/2,w,h);}
+    else{ctx.fillStyle=ratio<1.3?"#ff7a45":"#4cc27d";ctx.beginPath();ctx.arc(x,y,12,0,7);ctx.fill();}
+  }
+  $("cam").onclick=async function(){
+    try{
+      say("Loading hand tracking…");
+      hands=new Hands({locateFile:function(f){return "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/"+f}});
+      hands.setOptions({maxNumHands:1,modelComplexity:0,minDetectionConfidence:.6,minTrackingConfidence:.5});
+      hands.onResults(onResults);
+      var st=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:640,height:480},audio:false});
+      v.srcObject=st;await v.play();$("cam").classList.add("hidden");say("Show an open hand, then make a fist.");
+      (async function loop(){await hands.send({image:v});requestAnimationFrame(loop)})();
+    }catch(e){say("Camera or tracking failed: "+(e.message||e.name))}
+  };
+})();
+</script>
+</body>
+</html>
